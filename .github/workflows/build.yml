@@ -2867,6 +2867,29 @@ jobs:
               )
           if not susfs_object_rule.search(fs_makefile.read_text()):
               raise SystemExit(f"{fs_makefile} 注入后仍未接入 susfs.o")
+          # 上游 SUSFS v2.3.0 把 susfs_switch_to_ksu_domain / susfs_restore_creds 的
+          # 调用点放进了 #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER，定义却留在 guard 外。
+          # 该符号未声明时（SukiSU/BakaSU 的 Kconfig 都不声明，本步骤的注入清单也只有其余
+          # 10 个符号），调用点被编译掉、定义成为未使用函数，Android GKI 的
+          # -Werror,-Wunused-function 会直接判死整个编译。给这两个定义加 __maybe_unused
+          # 即可消除该错误，且不改变任何 SUSFS 特性的开关语义。
+          priority_guard_fix = [
+              ("static struct cred *susfs_switch_to_ksu_domain(",
+               "static __maybe_unused struct cred *susfs_switch_to_ksu_domain("),
+              ("static void susfs_restore_creds(",
+               "static __maybe_unused void susfs_restore_creds("),
+          ]
+          patched_susfs = susfs_source.read_text()
+          guarded = []
+          for before, after in priority_guard_fix:
+              if before in patched_susfs:
+                  patched_susfs = patched_susfs.replace(before, after, 1)
+                  guarded.append(after.split("(")[0].split()[-1])
+          if guarded:
+              susfs_source.write_text(patched_susfs)
+              print(f"已为 {susfs_source} 的未使用静态函数加 __maybe_unused: {guarded}")
+          else:
+              print(f"{susfs_source} 无需处理未使用静态函数（上游已修或函数签名变化）")
           print("SUSFS Kconfig 与核心链接契约校验通过")
           PY
 
